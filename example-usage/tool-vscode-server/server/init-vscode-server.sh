@@ -4,7 +4,7 @@ set -e
 # Define locations
 INSTALL_LOCATION="$HOME/.local/bin"
 DATA_DIR="$HOME/.vscode-server"
-VSCODE_VERSION="1.97.2"
+VSCODE_VERSION="1.106.3"
 
 echo "=== VS Code Server Setup ==="
 echo "Starting installation process..."
@@ -74,109 +74,40 @@ else
 fi
 echo ""
 
-# Function to download and install extension from marketplace
-install_extension_from_marketplace() {
+# Function to install extension for VS Code Server
+install_extension_for_server() {
     local extension=$1
     local publisher=$(echo "$extension" | cut -d. -f1)
     local name=$(echo "$extension" | cut -d. -f2)
     
     echo "Installing extension: $extension"
     
-    # Create temp directory for download
+    # Download VSIX from marketplace
     local temp_dir=$(mktemp -d)
     local vsix_file="$temp_dir/${extension}.vsix"
-    
-    # Use the gallery.vsassets.io URL (most reliable)
     local market_url="https://${publisher}.gallery.vsassets.io/_apis/public/gallery/publisher/${publisher}/extension/${name}/latest/assetbyname/Microsoft.VisualStudio.Services.VSIXPackage"
     
-    echo "  Downloading from: $market_url"
-    
-    # Download with curl, handling both gzipped and non-gzipped responses
-    if curl -L -f -H "Accept-Encoding: gzip" -o "$vsix_file" "$market_url" 2>/dev/null; then
-        echo "  Download completed"
+    if curl -L -f -o "$vsix_file" "$market_url" 2>/dev/null; then
+        # Extract to extensions directory
+        local ext_dir="$DATA_DIR/extensions/${publisher}.${name}"
+        mkdir -p "$ext_dir"
         
-        # Check file type
-        local file_type=$(file -b "$vsix_file" 2>/dev/null || echo "unknown")
-        echo "  File type: $file_type"
-        
-        # Check if it's gzipped
-        if file "$vsix_file" | grep -q "gzip compressed data"; then
-            echo "  File is gzipped, decompressing..."
-            mv "$vsix_file" "$vsix_file.gz"
-            if gunzip "$vsix_file.gz"; then
-                echo "  Decompression successful"
-            else
-                echo "  ✗ Decompression failed"
-                rm -rf "$temp_dir"
-                return 1
+        if unzip -q -o "$vsix_file" -d "$ext_dir" 2>/dev/null; then
+            # Move extension folder contents if needed
+            if [ -d "$ext_dir/extension" ]; then
+                mv "$ext_dir/extension/"* "$ext_dir/" 2>/dev/null || true
+                rmdir "$ext_dir/extension" 2>/dev/null || true
             fi
-        fi
-        
-        # Now check if it's a valid VSIX (ZIP) file
-        if file "$vsix_file" | grep -q -E "(Zip archive data|ZIP archive data|Java archive data)"; then
-            # Extract VSIX to extensions directory
-            local ext_dir="$DATA_DIR/extensions/${publisher}.${name}"
-            rm -rf "$ext_dir"  # Remove if exists
-            mkdir -p "$ext_dir"
             
-            echo "  Extracting to: $ext_dir"
-            if unzip -q -o "$vsix_file" -d "$ext_dir" 2>/dev/null; then
-                # Look for package.json in different locations
-                local package_json=""
-                if [ -f "$ext_dir/extension/package.json" ]; then
-                    package_json="$ext_dir/extension/package.json"
-                    # Move contents of extension folder up one level
-                    mv "$ext_dir/extension/"* "$ext_dir/" 2>/dev/null || true
-                    rmdir "$ext_dir/extension" 2>/dev/null || true
-                elif [ -f "$ext_dir/package.json" ]; then
-                    package_json="$ext_dir/package.json"
-                fi
-                
-                if [ -n "$package_json" ]; then
-                    local ext_version=$(jq -r '.version // "unknown"' "$package_json" 2>/dev/null)
-                    echo "  ✓ Successfully installed version $ext_version"
-                else
-                    echo "  ✗ No package.json found in extension"
-                fi
-            else
-                echo "  ✗ Failed to extract VSIX"
-            fi
+            local version=$(jq -r '.version // "unknown"' "$ext_dir/package.json" 2>/dev/null)
+            echo "  ✓ Successfully installed $extension v$version"
         else
-            echo "  ✗ Downloaded file is not a valid VSIX/ZIP file"
+            echo "  ✗ Failed to extract $extension"
         fi
     else
-        echo "  ✗ Failed to download extension"
-        
-        # Try alternative download without specific headers
-        echo "  Trying alternative download method..."
-        if wget -q -O "$vsix_file" "$market_url" 2>/dev/null; then
-            # Process the downloaded file same as above
-            if file "$vsix_file" | grep -q "gzip compressed data"; then
-                mv "$vsix_file" "$vsix_file.gz"
-                gunzip "$vsix_file.gz" 2>/dev/null || true
-            fi
-            
-            if file "$vsix_file" | grep -q -E "(Zip archive data|ZIP archive data|Java archive data)"; then
-                local ext_dir="$DATA_DIR/extensions/${publisher}.${name}"
-                rm -rf "$ext_dir"
-                mkdir -p "$ext_dir"
-                
-                if unzip -q -o "$vsix_file" -d "$ext_dir" 2>/dev/null; then
-                    if [ -f "$ext_dir/extension/package.json" ]; then
-                        mv "$ext_dir/extension/"* "$ext_dir/" 2>/dev/null || true
-                        rmdir "$ext_dir/extension" 2>/dev/null || true
-                    fi
-                    echo "  ✓ Successfully installed via wget"
-                else
-                    echo "  ✗ Failed with alternative method"
-                fi
-            fi
-        else
-            echo "  ✗ Alternative download also failed"
-        fi
+        echo "  ✗ Failed to download $extension"
     fi
     
-    # Clean up
     rm -rf "$temp_dir"
     echo ""
 }
@@ -194,15 +125,15 @@ if [ -f "/server/configuration.json" ]; then
             ] | unique | .[]
         ' /server/configuration.json 2>/dev/null || echo "") )
         
-        # Install extensions
+        # Install extensions using marketplace download
         if [ ${#extensions[@]} -gt 0 ] && [ "${extensions[0]}" != "" ] && [ "${extensions[0]}" != "null" ]; then
             echo "Found ${#extensions[@]} extensions to install"
             echo ""
             
-            # Install each extension from marketplace
+            # Install each extension
             for extension in "${extensions[@]}"; do
                 if [ "$extension" != "" ] && [ "$extension" != "null" ]; then
-                    install_extension_from_marketplace "$extension"
+                    install_extension_for_server "$extension" || true
                 fi
             done
             
@@ -259,11 +190,11 @@ echo "Starting VS Code Server..."
 echo "Server will be available at: http://localhost:8000"
 echo ""
 
-# Start server in foreground (remove nohup since devcontainer exec handles the process)
+# Start server in foreground
+# Extensions are managed in the default location under --server-data-dir
 exec "$INSTALL_LOCATION/code" serve-web \
     --accept-server-license-terms \
     --host 0.0.0.0 \
     --port 8000 \
     --without-connection-token \
-    --user-data-dir "$DATA_DIR" \
-    --extensions-dir "$DATA_DIR/extensions"
+    --server-data-dir "$DATA_DIR"
